@@ -169,6 +169,41 @@ int32_t FingerprintConfig::sensorTypeEnum() const {
     return 0;  // UNKNOWN
 }
 
+int32_t FingerprintConfig::sensorX() const {
+    const auto location =
+            Utils::getProperty("persist.vendor.fingerprint.optical.sensorlocation", "");
+    if (!location.empty()) {
+        const auto parts = android::base::Tokenize(location, ":");
+        if (parts.size() >= 2) {
+            return std::atoi(parts[0].c_str());
+        }
+    }
+    return mSensorX;
+}
+
+int32_t FingerprintConfig::sensorY() const {
+    const auto location =
+            Utils::getProperty("persist.vendor.fingerprint.optical.sensorlocation", "");
+    if (!location.empty()) {
+        const auto parts = android::base::Tokenize(location, ":");
+        if (parts.size() >= 2) {
+            return std::atoi(parts[1].c_str());
+        }
+    }
+    return mSensorY;
+}
+
+int32_t FingerprintConfig::sensorRadius() const {
+    const auto size = Utils::getProperty("persist.vendor.fingerprint.optical.iconsize", "");
+    if (!size.empty()) {
+        const int val = std::atoi(size.c_str());
+        if (val > 0) {
+            return val / 2;
+        }
+    }
+    return mSensorRadius;
+}
+
 int FingerprintConfig::taConfigInit(FpCa* ca) {
     if (ca == nullptr) {
         return -1;

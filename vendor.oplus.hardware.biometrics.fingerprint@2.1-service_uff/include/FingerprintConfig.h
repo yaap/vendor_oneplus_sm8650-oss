@@ -28,9 +28,9 @@ class FingerprintConfig {
     // 4=POWER_BUTTON, 5=HOME_BUTTON).
     int32_t sensorTypeEnum() const;
 
-    int32_t sensorX() const { return mSensorX; }
-    int32_t sensorY() const { return mSensorY; }
-    int32_t sensorRadius() const { return mSensorRadius; }
+    int32_t sensorX() const;
+    int32_t sensorY() const;
+    int32_t sensorRadius() const;
 
     std::string version() const { return mVersion; }
     std::string sensorType() const { return mSensorType; }
