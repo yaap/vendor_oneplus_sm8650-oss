@@ -25,27 +25,60 @@ HalContext::~HalContext() {
     deinit();
 }
 
-int HalContext::selectChip() {
+int HalContext::selectAndStartTa() {
     static const TaName kCandidates[] = {
-            TaName::UffGx,  TaName::UffJv,  TaName::UffSilead,
-            TaName::UffEgis, TaName::UffFpc, TaName::UffQcom,
+            TaName::UffJv,
+            TaName::UffGx,
+            TaName::UffSpi,
+            TaName::UffSilead,
+            TaName::UffEgis,
+            TaName::UffFpc,
+            TaName::UffQcom,
     };
+
+    mCa = std::unique_ptr<FpCa>(createCa("qsee"));
+    if (mCa == nullptr) {
+        LOG(ERROR) << "HalContext: failed to create CA backend";
+        return -1;
+    }
+
     for (TaName candidate : kCandidates) {
         const std::string_view ta = taNameToString(candidate);
         if (ta.empty()) {
             continue;
         }
+
+        // Check if firmware exists on disk for this variant
+        bool available = false;
+        std::string foundPath;
         for (const char* path : kTaFirmwarePaths) {
-            if (Utils::isFileExist(std::string(path) + "/" + std::string(ta) + ".mdt")) {
-                mTaName = candidate;
-                LOG(INFO) << "HalContext: selected TA " << ta << " from " << path;
-                return 0;
+            const std::string mdtPath = std::string(path) + "/" + std::string(ta) + ".mdt";
+            if (Utils::isFileExist(mdtPath)) {
+                available = true;
+                foundPath = path;
+                break;
             }
         }
+
+        if (!available) {
+            LOG(INFO) << "HalContext: TA variant " << ta
+                      << " not available on disk, checking next variant";
+            continue;
+        }
+
+        LOG(INFO) << "HalContext: attempting to load TA " << ta << " (found in " << foundPath << ")";
+        if (mCa->startTa(candidate) == 0) {
+            mTaName = candidate;
+            LOG(INFO) << "HalContext: successfully loaded TA " << ta;
+            return 0;
+        }
+
+        LOG(WARNING) << "HalContext: failed to load TA " << ta << ", trying next variant...";
+        mCa->closeTa();
     }
-    LOG(WARNING) << "HalContext: no TA firmware found, defaulting to uff_gx";
-    mTaName = TaName::UffGx;
-    return 0;
+
+    LOG(ERROR) << "HalContext: all available TA variants failed to load";
+    return -1;
 }
 
 void HalContext::onDeviceEvent(const driver::FingerprintMessage& message) {
@@ -192,21 +225,20 @@ int HalContext::init() {
     mConfig = std::make_unique<FingerprintConfig>();
     mConfig->init();
 
-    selectChip();
-
     mCommon = std::make_unique<FingerprintCommon>();
 
     mDevice = std::make_unique<Device>();
     if (mDevice->open() != 0) {
         LOG(ERROR) << "HalContext: failed to open fingerprint device";
+        deinit();
         return -1;
     }
     mDevice->controlPower(driver::PowerState::On);
     mDevice->reset();
 
-    mCa = std::unique_ptr<FpCa>(createCa("qsee"));
-    if (mCa == nullptr || mCa->startTa(mTaName) != 0) {
+    if (selectAndStartTa() != 0) {
         LOG(ERROR) << "HalContext: failed to start TA";
+        deinit();
         return -1;
     }
 

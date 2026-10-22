@@ -70,7 +70,7 @@ class HalContext {
     bool isInitialized() const { return mInitialized; }
 
   private:
-    int selectChip();
+    int selectAndStartTa();
     void onDeviceEvent(const driver::FingerprintMessage& message);
 
     // The driver reader hands touch-downs to this thread, so a capture that
