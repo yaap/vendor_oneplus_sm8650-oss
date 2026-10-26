@@ -280,8 +280,8 @@ of the wait.
 
 Instrumentation: setting `persist.vendor.fingerprint.perf=1` emits one
 `Perf:` line per operation. It records the accepted touch source, kernel and
-AOSP pointer post counts, dropped posts, AIDL setup and pre-arm time, worker,
-UI-ready and post-UI delay, each core stage and each TA command. `result_us` is
+AOSP pointer post counts, dropped posts, AIDL setup and pre-arm time, worker
+and UI-ready timing, each core stage and each TA command. `result_us` is
 the cumulative time to the authentication result; `total_us` also includes the
 TA `AuthenticateFinish` that runs after the result is published. With the
 property unset the trace is limited to a few atomic counters.
@@ -301,9 +301,8 @@ reset stays in place and the worker waits for the panel after the wake.
 The worker waits for the panel driver's `UI_READY` event (posted by the
 reader) for up to 1000/500 ms; keeping the capture off the reader is what lets
 that event arrive while it waits. This event is the capture gate because it
-reports that the pressed icon and HBM are scanning. The 15 ms post-UI settle
-delay is reduced by the event's age, so a latch posted before the touch only
-waits for the remaining part. The framework's `onUiReady` callback only says
+reports that the pressed icon and HBM are scanning. Capture starts immediately
+once the event is observed. The framework's `onUiReady` callback only says
 that its overlay view is configured, so it does not post the latch. A timeout
 or cancel aborts the operation instead of capturing outside the overlay
 window. In the

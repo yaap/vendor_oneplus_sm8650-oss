@@ -13,7 +13,6 @@
 #include "Utils.h"
 
 #include <android-base/logging.h>
-#include <unistd.h>
 
 #include <array>
 #include <chrono>
@@ -43,23 +42,6 @@ OpticalCore::OpticalCore(HalContext* context) : IFingerprintCore(context) {}
 
 int OpticalCore::init() {
     return IFingerprintCore::init();
-}
-
-void OpticalCore::delayAfterUiready(int64_t uireadyAgeUs) {
-    // The vendor waits 15 ms after UI_READY before the first capture. Its
-    // refresh-rate command is not sent by the AOSP framework, so the prebuilt
-    // uses this default here as well. Starting 1 ms after UI_READY captures
-    // before the overlay and panel dim layer have settled, which drops the
-    // first screen-off press. A screen-on operation may consume an event that
-    // was posted seconds earlier, so only wait for the unsettled remainder.
-    constexpr int64_t kSettleUs = 15 * 1000;
-    if (uireadyAgeUs >= kSettleUs) {
-        return;
-    }
-    if (uireadyAgeUs < 0) {
-        uireadyAgeUs = 0;
-    }
-    usleep(static_cast<useconds_t>(kSettleUs - uireadyAgeUs));
 }
 
 void OpticalCore::refreshTemperature() {
@@ -112,10 +94,8 @@ int OpticalCore::enrollDown() {
     }
     mContext->perf().mark("enroll_down");
 
-    int64_t uireadyAgeUs = 0;
     if (mContext->common() != nullptr) {
-        const int uireadyRet = mContext->common()->waitUiready(kEnrollUireadyTimeoutMs,
-                                                               &uireadyAgeUs);
+        const int uireadyRet = mContext->common()->waitUiready(kEnrollUireadyTimeoutMs);
         // A cancel wakes the wait so this worker can abort its TA state before
         // the cancellation signal acknowledges the framework. A timeout means
         // the overlay never became ready; capturing outside that window only
@@ -126,8 +106,6 @@ int OpticalCore::enrollDown() {
         }
     }
     mContext->perf().mark("ui_wait");
-    delayAfterUiready(uireadyAgeUs);
-    mContext->perf().mark("post_ui");
 
     CaptureResult capture = {};
     int ret = captureImg(WorkMode::Enroll, 0, &capture);
@@ -238,10 +216,8 @@ int OpticalCore::authenticateDown() {
     }
     mContext->perf().mark("auth_start");
 
-    int64_t uireadyAgeUs = 0;
     if (mContext->common() != nullptr) {
-        const int uireadyRet = mContext->common()->waitUiready(kAuthUireadyTimeoutMs,
-                                                               &uireadyAgeUs);
+        const int uireadyRet = mContext->common()->waitUiready(kAuthUireadyTimeoutMs);
         // The same overlay handshake gates authentication. A failed wait must
         // not fall through to a capture. If the wait timed out, the touch was
         // outside the sensor area or lifted early; ignore it without aborting
@@ -256,8 +232,6 @@ int OpticalCore::authenticateDown() {
         }
     }
     mContext->perf().mark("ui_wait");
-    delayAfterUiready(uireadyAgeUs);
-    mContext->perf().mark("post_ui");
 
     int ret = 0;
     for (int attempt = 0; attempt < kMaxCaptureRetries; ++attempt) {
