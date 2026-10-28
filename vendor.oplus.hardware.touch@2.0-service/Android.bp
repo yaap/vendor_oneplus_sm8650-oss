@@ -55,11 +55,15 @@ cc_binary {
 
     srcs: [
         "touchDaemon/TouchConfigDaemon.cpp",
+        "touchDaemon/TouchPrevention.cpp",
     ],
+
+    local_include_dirs: ["touchDaemon"],
 
     shared_libs: [
         "libbase",
         "libcutils",
+        "libdl",
         "liblog",
     ],
 

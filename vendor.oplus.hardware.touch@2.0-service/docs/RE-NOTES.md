@@ -111,18 +111,111 @@ The stock daemon:
 - parses touch scene/edge XML;
 - sends `touchNotifyClient` notifications to the AIDL service.
 
-The source daemon owns the userspace gesture hand-off. It watches the HBP
-input device for `KEY_F4`, reads the decoded gesture from
-`/proc/touchpanel/coordinate`, maps the legacy gesture id to
-`KEY_GESTURE_START + id`, and creates a uinput keyboard for those scan codes.
-The source service exposes a software gesture mask for the legacy AIDL node 21
-because HBP does not create `double_tap_enable_indep`.
+The source daemon keeps the userspace gesture hand-off and also owns the HBP
+AFE/ALGO frame pipeline. The gesture bridge watches the HBP input device for
+`KEY_F4`, reads the decoded gesture from `/proc/touchpanel/coordinate`, maps the
+legacy gesture id to `KEY_GESTURE_START + id`, and creates a uinput keyboard for
+those scan codes. The source service exposes a software gesture mask for the
+legacy AIDL node 21 because HBP does not create `double_tap_enable_indep`.
 
-The HBP AFE/ALGO frame pipeline and its AFT prevention algorithm are not part
-of the source daemon. HBP normal touch reporting is kernel-owned, and the HBP
-kernel now forces the Synaptics firmware grip-suppression policy during every
-application-firmware setup and resume. The daemon deliberately does not open
-`/dev/tcm_hbp0` or program grip/edge state.
+The HBP AFE/ALGO pipeline:
+
+- It derives the panel library from `/proc/devinfo/tp` `Device fw_path`.
+- It sets `vendor.oplus.touch.customifplib.path` to the stock `libIfp.so`.
+- It calls `tcmInitModule`, `tcmOpen("/dev/tcm_hbp", ...)`, and registers the
+  event callback.
+- It enables the custom frame path (IDs 9 and 10), doze (ID 6), recovery
+  (ID 8), and HBP mode (ID 2).  The stock daemon leaves the core in its
+  initial idle mode at this point; the screen transition selects mode 3 or
+  mode 1.
+- The HBP core is a two-stage state machine: `tcmSetMode()` selects the next
+  mode and `tcmService()` runs the transition.  Mode 3 is screen-on/enable
+  report; mode 1 is screen-off/idle.  The daemon mirrors stock
+  `ts_switch_mode()` by calling `tcmSetMode`, servicing once or twice, then
+  verifying the current mode with `tcmGetMode`.
+- It feeds the `FrameDataParse` package from the HAL/IFP path to
+  `IFrameDataParse`, `IThpAlgoProcess`, `IGetAlgoPoint`, and `IGetAftInfo`.
+  The matrix is copied with the panel-native row stride: BOE uses 17x38 and
+  TIANMA uses 18x40. BOE's parser reads `numColumns` from hardware-info offset
+  0 and `numRows` from offset 2, so those fields are filled before init.
+- It selects the ALGO entry points by panel: BOE uses `IAlgoOpen` followed by
+  `IAlgoInit(ctx, hardware, 0x31c)`; TIANMA uses `IThpAlgoInit`. The resulting
+  context is passed to every subsequent ALGO call. It also registers
+  `IAlgoSetConfigReadCallback` before setting
+  `PARAM_ID_ALGO_CONFIG_MODE (0x11)` to the XML panel index, because the BOE
+  library invokes that callback while handling 0x11.
+- It feeds the ALGO points and the AFT `tx_press`/`rx_press`/`tx_er`/`rx_er`
+  records into the stock userspace prevention engine before reporting. The
+  prevention array and mask are indexed by the ALGO point ID (as in the stock
+  daemon), while the AFT records remain indexed by the package slot. The engine
+  is the same `curved_large_handle_V2`/V4 implementation used by the stock
+  daemon, including the make-up/up-cancel path. The old AFT/geometry check is
+  kept only as a fallback when the prevention configuration cannot be loaded.
+- It reapplies the firmware grip DCs through the HBP handle when the shared
+  edge-grip level changes. While the daemon owns `/dev/tcm_hbp0`, the kernel
+  sysfs write can update only the stored level and cannot reliably program the
+  panel through the daemon-owned response path.  A level change while the
+  panel is suspended is deferred to the next screen-on transition.
+- It mirrors the stock screen-state transitions.  On suspend it calls
+  `ts_suspend_application`'s ALGO parameter `0x15, 0`, sets the vendor ALGO to
+  `MODE_SCREEN_OFF`, switches the HBP core to mode 1, then pauses servicing
+  until resume.  On resume it switches the core back to mode 3, sets ALGO
+  `MODE_SCREEN_ON`, and applies the current firmware grip level.  HBP
+  custom-frame parameters, HBP mode, and `DC_CONTROL_LBP_HBP` are not rewritten
+  on resume; the kernel resume path has already restored them.
+- `tcmService()` returning `0x67` (103) is a state-change request, not an
+  error.  The daemon handles it like stock `ts_isSyncSuspend()`: it reads the
+  driver power state and, if the panel is suspended, runs the screen-off
+  transition.  Repeated transient service errors no longer tear down the
+  pipeline.
+- The daemon installs handlers for vendor signals `SIGRTMIN+2..+6`. Signals
+  44/45 are `ts_resume_application`/`ts_suspend_application` and drive the HBP
+  mode transitions; a quick off/on pair is kept as two separate pending
+  transitions.  Signals 46/47/48 are fingerprint-down, under-water, and
+  fingerprint-up notifications and are caught but do not drive HBP transitions.
+  This prevents screen-state changes from terminating the daemon and forcing
+  init to restart it.
+- While `/proc/touchpanel/fingerprint_active` is set, prevention is bypassed so
+  a UDFPS press is not classified as a grip/palm touch. Fingerprint state is
+  polled with a short cache to avoid opening the proc node every frame.
+- Screen-on fingerprint reporting is bridged explicitly.  `REPORT_HBP_ACTIVE_FRAME`
+  bypasses the kernel's normal `REPORT_TOUCH` path, so
+  `syna_dev_report_fp_screen_on()` never runs while HBP owns the panel.  The
+  fingerprint HAL arms `/proc/touchpanel/fingerprint_hal` bit 1; the daemon
+  watches that node with inotify (event-driven, no polling on the fingerprint
+  path), applies `IThpAlgoSetParam(ctx, 1, 1)` immediately without waiting for
+  the HBP handle mutex, and queues
+  `tcmSetParam(handle, 7, DC_TOUCH_HOLD=0xD4, 3)` for the HBP service loop so
+  the authentication path cannot be starved.  The UDFPS area is marked
+  prevention-exempt.
+- In HBP mode the HAL accepts only `0x23` active-frame and power-state
+  reports, so the firmware `TOUCH_HOLD_DOWN/UP` (`0x80`/`0x81`) type-1 reports
+  that stock writes to `/proc/touchpanel/fingerprint_trigger` are not
+  delivered.  The daemon drives the same trigger from the type-4 algorithm
+  points instead: while `fingerprint_hal` bit 1 is set it writes `1,x,y` from
+  the first reported point (scaled from algorithm to touch-input coordinates)
+  and `0,0,0` when the points are released.  The type-1 `0x80`/`0x81` handler
+  remains as a secondary path.  Trigger transitions are serialized and an
+  explicit up is written when bit 1 clears, because the kernel's `is_fp_down`
+  persists across suspend and a stale down would suppress the next
+  authentication.  Fingerprint state transitions are logged at DEBUG; the
+  trigger down/up lines remain at INFO, and a DEBUG session summary reports
+  `frames`, `point_frames`, and `triggers` when the bit clears.
+- On screen-off the algorithm parameter and trigger state are cleared without
+  touching the firmware touch-hold DC; the kernel/fingerprint HAL own the
+  low-power path, and the full fingerprint mode is reapplied on resume.
+- Normal 20-byte HBP status reports are not logged; only an unexpected status
+  package size produces a debug line.
+- The init rc makes `/dev/uinput` accessible to the daemon's `input` group so
+  gesture keys use the virtual input device instead of injecting key events
+  into the kernel touch device.
+- On service termination it sends the HBP core mode 0 and closes the
+  character device; cdev release then restores kernel LBP reporting.
+
+The HBP kernel still forces the Synaptics firmware grip-suppression policy
+during application-firmware setup and resume. That firmware layer is retained
+as a second line of defense; the stock userspace ALGO/AFT plus prevention
+engine is the primary mistouch/palm mechanism.
 
 ## Prior blob fixes
 
@@ -139,9 +232,34 @@ The old extraction script replaced `libtinyxml2.so` with
 uses the platform `libtinyxml2` directly; the source service has no XML
 dependency at all. No touch entry needs the `_stock` workaround.
 
-## Stage-three limitation
+## Prevention port
 
-`sys_touch_function_feature_config.xml` is parsed for panel/version
-diagnostics. Its values are not blindly applied because the kernel DTS already
-owns them. HBP firmware grip suppression is forced from the kernel; userspace
-does not apply the legacy `sys_edge_touch_config.xml` values.
+`sys_touch_function_feature_config.xml` is parsed for panel/version diagnostics
+and for the full `PreventionConfig` block used by the stock prevention engine.
+The parser selects the panel matching the resolved HBP library (`TIANMA` or
+`BOE`). The kernel DTS continues to own the firmware equivalents; HBP firmware
+grip is applied from the kernel at the selected level, and the source daemon
+does not apply the legacy `sys_edge_touch_config.xml` values verbatim.
+
+The prevention implementation is a userspace port of the stock daemon's
+`oplus_prevention_*`, `kernel_grip_init`, `curved_large_handle_V2`, and helper
+code. It uses the ALGO `AlgoPoint` data and the AFT record fields directly;
+there is no new kernel device or ioctl. The reference binary is
+`proprietary/odm/bin/touchDaemon` from vendor commit `0b4dda3` in the
+`sm8650-common` repository.
+
+`persist.vendor.edge_grip_suppression` is the shared level for the firmware
+and userspace layers. Level `0` disables both. Levels `1-5` scale the ten
+edge/corner region dimensions used by `large_judge_pos()`; level `3` restores
+the stock XML geometry exactly. The scale matches the firmware DARK X ratio
+`(0x0A + 2 * (level - 1)) / 0x0E`. The daemon polls the persistent property
+from its existing watchdog and resets the prevention state when it changes.
+
+The source HBP node map still does not forward the legacy direction and
+reclining-mode nodes, so the prevention engine starts in the stock portrait
+(`VERTICAL_SCREEN`) orientation. Landscape/reclining parameter switching is a
+separate follow-up.
+
+The userspace pipeline is controlled by
+`persist.vendor.touch.hbp_pipeline` (default `1`). Setting it to `0` keeps the
+daemon in gesture-only mode and leaves `/dev/tcm_hbp0` to the kernel path.
