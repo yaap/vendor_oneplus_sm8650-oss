@@ -1,0 +1,13 @@
+service vendor.oplusSensor-aidl-1 /odm/bin/hw/vendor-oplus-hardware-oplusSensor-V1-service
+    class hal
+    user system
+    group system
+    interface aidl vendor.oplus.hardware.oplusSensor.ISensorFeature/default
+    disabled
+    oneshot
+
+on property:ro.vendor.oplus.sensor.lowmem=
+    start vendor.oplusSensor-aidl-1
+
+on property:ro.vendor.oplus.sensor.lowmem=false
+    start vendor.oplusSensor-aidl-1

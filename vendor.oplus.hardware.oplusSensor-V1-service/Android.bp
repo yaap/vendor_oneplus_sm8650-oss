@@ -1,0 +1,50 @@
+/*
+ * Copyright (C) 2026 The YAAP Project
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Source replacement for vendor.oplus.hardware.oplusSensor-V1-service.
+ * The interface is the public AIDL from hardware/oplus/interfaces; the
+ * implementation talks directly to the stock registry, reserve partition and
+ * proc/sysfs calibration nodes.
+ */
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+cc_binary {
+    name: "vendor.oplus.hardware.oplusSensor-V1-service",
+    stem: "vendor-oplus-hardware-oplusSensor-V1-service",
+    owner: "oneplus",
+    device_specific: true,
+    relative_install_path: "hw",
+
+    init_rc: ["etc/vendor-oplus-hardware-oplusSensor-V1-service.rc"],
+    vintf_fragments: ["etc/manifest_oplusSensor_aidl.xml"],
+
+    srcs: [
+        "main.cpp",
+        "SensorFeature.cpp",
+    ],
+
+    shared_libs: [
+        "vendor.oplus.hardware.oplusSensor-V1-ndk",
+        "libbase",
+        "libbinder_ndk",
+        "libcutils",
+        "libdl",
+        "libhardware",
+        "libjsoncpp",
+        "liblog",
+        "libutils",
+    ],
+
+    cpp_std: "c++20",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    stl: "c++_shared",
+}
