@@ -84,7 +84,7 @@ class BiometricsFpSession
   private:
     std::shared_ptr<ICancellationSignal> makeCancellationSignal();
     ndk::ScopedAStatus authenticateInternal(
-            int64_t operationId, bool displayOn,
+            int64_t operationId, bool reuseUiready,
             std::shared_ptr<ICancellationSignal>* out);
     void notify(const FingerprintMsg& message);
     void dispatchTouch(bool down);

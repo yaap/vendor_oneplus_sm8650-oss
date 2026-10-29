@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 
 using aidl::android::hardware::biometrics::common::DisplayState;
 using aidl::android::hardware::biometrics::fingerprint::AcquiredInfo;
@@ -37,6 +38,49 @@ namespace {
 // Per-user directory the TA keeps the fingerprint data in. The framework keeps
 // one active session per sensor, so a session binds this once when created.
 constexpr char kUserDataPathFormat[] = "/data/vendor_de/%d/fpdata";
+
+// The display driver exposes the panel's fingerprint type in this node. Bit 4
+// selects the local-HBM UI_READY timing: local-HBM panels post UI_READY when
+// the prompt overlay is configured, while global-HBM panels post it when the
+// pressed icon and whole-panel HBM turn on at touch time.
+constexpr char kFpTypePath[] = "/sys/kernel/oplus_display/fp_type";
+constexpr unsigned int kLocalHbmBit = 1u << 4;
+
+bool panelUsesLocalHbm() {
+    static const bool localHbm = [] {
+        std::ifstream file(kFpTypePath);
+        unsigned int fpType = 0;
+        if (!(file >> fpType)) {
+            LOG(WARNING) << "cannot read " << kFpTypePath
+                         << "; assuming global HBM timing";
+            return false;
+        }
+        const bool local = (fpType & kLocalHbmBit) != 0;
+        LOG(INFO) << "fingerprint: panel fp_type=" << fpType
+                  << " (" << (local ? "local" : "global") << " HBM)";
+        return local;
+    }();
+    return localHbm;
+}
+
+// UI_READY reuse is only safe when the panel's HBM was already configured for
+// this operation. Local-HBM panels do that when the prompt overlay appears.
+// Global-HBM panels enable HBM with the fingerpress layer at touch time, so a
+// latch present before the touch is stale and would start the capture before
+// the panel is bright.
+bool shouldReuseUiready(DisplayState state) {
+    switch (state) {
+        case DisplayState::LOCKSCREEN:
+        case DisplayState::SCREENSAVER:
+            return true;
+        case DisplayState::UNKNOWN:
+            return panelUsesLocalHbm();
+        case DisplayState::NO_UI:
+        case DisplayState::AOD:
+            return false;
+    }
+    return false;
+}
 
 // The TA takes the auth token in its own serialized form rather than the AIDL
 // one: a leading zero byte, the identifiers raw, the authenticator type and
@@ -287,7 +331,7 @@ ndk::ScopedAStatus BiometricsFpSession::authenticate(int64_t operationId,
 }
 
 ndk::ScopedAStatus BiometricsFpSession::authenticateInternal(
-        int64_t operationId, bool displayOn,
+        int64_t operationId, bool reuseUiready,
         std::shared_ptr<ICancellationSignal>* out) {
     if (mContext == nullptr || mContext->core() == nullptr) {
         return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
@@ -297,7 +341,7 @@ ndk::ScopedAStatus BiometricsFpSession::authenticateInternal(
     // Select the UI-ready mode before waiting for the previous worker, so this
     // operation's UI_READY is not dropped while the old AuthenticateFinish is
     // still unwinding.
-    mContext->beginUireadyOperation(true, displayOn);
+    mContext->beginUireadyOperation(true, reuseUiready);
     mContext->waitForWorkIdle();
     if (mContext->common() != nullptr) {
         mContext->common()->clearUireadyCancellation();
@@ -484,13 +528,13 @@ ndk::ScopedAStatus BiometricsFpSession::authenticateWithContext(
         int64_t operationId,
         const aidl::android::hardware::biometrics::common::OperationContext& context,
         std::shared_ptr<ICancellationSignal>* out) {
-    // AOSP starts authentication before the finger arrives. When the display
-    // is already on, the panel's UI_READY event belongs to this operation's
-    // overlay and can be consumed by the touch. When the display is off or
-    // dozing, the touch wakes it and the HAL must wait for the post-wake event.
-    const bool displayOn = context.displayState != DisplayState::NO_UI &&
-                           context.displayState != DisplayState::AOD;
-    return authenticateInternal(operationId, displayOn, out);
+    // AOSP starts authentication before the finger arrives. Reusing a
+    // pre-touch UI_READY is only valid on local-HBM panels, where the prompt
+    // overlay configures the panel before the touch. Global-HBM panels enable
+    // HBM at touch time, so they must reset and wait for the fresh panel
+    // event. Screen-off and dozing operations never reuse the latch.
+    return authenticateInternal(operationId,
+                                shouldReuseUiready(context.displayState), out);
 }
 
 ndk::ScopedAStatus BiometricsFpSession::enrollWithContext(
@@ -522,13 +566,12 @@ ndk::ScopedAStatus BiometricsFpSession::onPointerUpWithContext(
 ndk::ScopedAStatus BiometricsFpSession::onContextChanged(
         const aidl::android::hardware::biometrics::common::OperationContext& context) {
     // AOSP starts authentication while the display is dozing. If the display
-    // turns on before the finger arrives, the overlay/HBM event is now
-    // usable; if it goes away, drop back to the touch-time reset. Only
-    // authentication operations are allowed to promote reuse.
+    // reaches a state whose overlay/HBM is usable before the finger arrives,
+    // promote reuse; otherwise keep the touch-time reset. Only authentication
+    // operations are allowed to promote reuse.
     if (mContext != nullptr) {
-        const bool displayOn = context.displayState != DisplayState::NO_UI &&
-                               context.displayState != DisplayState::AOD;
-        mContext->updateUireadyDisplayState(displayOn);
+        mContext->updateUireadyDisplayState(
+                shouldReuseUiready(context.displayState));
     }
     return ndk::ScopedAStatus::ok();
 }

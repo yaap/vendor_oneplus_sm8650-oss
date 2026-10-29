@@ -291,13 +291,17 @@ worker (the vendor's EventThd/WorkThd split) → `IFingerprintCore::doTouchDownE
 → `OpticalCore::authenticateDown` / `enrollDown` → `captureImg`. A new
 touch-down drops any UI-ready post left by screen-off, wake or the previous
 operation, so the capture cannot consume an overlay event that does not belong
-to it. Authentication is the exception: AOSP can start it while the display
-is dozing, so a later `onContextChanged` with `DisplayState::LOCKSCREEN`
-promotes the operation to reuse the `UI_READY` posted when its overlay and HBM
-were configured. If the display is still dozing when the touch arrives, the
-reset stays in place and the worker waits for the panel after the wake.
-`onContextChanged` drops back to the reset if the display goes away, and
-`UI_DISAPPEAR=7` drops a latch left by an older overlay.
+to it. Authentication is the exception, but only when the panel's HBM was
+configured before the touch. On local-HBM panels (`/sys/kernel/oplus_display/fp_type`
+bit 4 set) the prompt overlay configures HBM before the finger, so
+`LOCKSCREEN`, `SCREENSAVER`, and in-app (`DisplayState::UNKNOWN`) operations
+reuse the latched `UI_READY`. On global-HBM panels only lockscreen/screensaver
+authentication reuses it; in-app prompts keep the touch-time reset and wait
+for the panel's `UI_READY` when the pressed icon enables HBM. If the display
+is still dozing when the touch arrives, the reset stays in place and the
+worker waits for the panel after the wake. `onContextChanged` drops back to
+the reset if the display goes away, and `UI_DISAPPEAR=7` drops a latch left
+by an older overlay.
 The worker waits for the panel driver's `UI_READY` event (posted by the
 reader) for up to 1000/500 ms; keeping the capture off the reader is what lets
 that event arrive while it waits. This event is the capture gate because it
