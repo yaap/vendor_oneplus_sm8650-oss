@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Source replacement for vendor.oplus.hardware.oplusSensor-V1-service.
+ * Source replacement for vendor-oplus-hardware-oplusSensor-V1-service.
  * The interface is the public AIDL from hardware/oplus/interfaces; the
  * implementation talks directly to the stock registry, reserve partition and
  * proc/sysfs calibration nodes.
@@ -14,7 +14,7 @@ package {
 }
 
 cc_binary {
-    name: "vendor.oplus.hardware.oplusSensor-V1-service",
+    name: "vendor-oplus-hardware-oplusSensor-V1-service",
     stem: "vendor-oplus-hardware-oplusSensor-V1-service",
     owner: "oneplus",
     device_specific: true,

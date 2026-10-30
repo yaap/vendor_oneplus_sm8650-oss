@@ -1,4 +1,4 @@
-# vendor.oplus.hardware.oplusSensor-V1-service
+# vendor-oplus-hardware-oplusSensor-V1-service
 
 Open-source replacement for the OPLUS engineering sensor feature HAL
 (`vendor.oplus.hardware.oplusSensor.ISensorFeature/default`).
@@ -60,7 +60,7 @@ The full key lists and reserve offsets are in `RE-NOTES.md`.
 ## Build
 
 ```text
-vendor.oplus.hardware.oplusSensor-V1-service
+vendor-oplus-hardware-oplusSensor-V1-service
 ```
 
 The binary is installed as
