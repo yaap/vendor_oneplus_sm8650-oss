@@ -1,0 +1,45 @@
+/*
+ * Copyright (C) 2026 The YAAP Project
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Source replacement for vendor.oplus.hardware.charger-V11-service.
+ * The binary is installed at the stock path so the existing ODM init rc and
+ * VINTF manifest keep working unchanged.
+ */
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+cc_binary {
+    name: "vendor.oplus.hardware.charger-V11-service",
+    stem: "vendor.oplus.hardware.charger-V11-service",
+    owner: "oneplus",
+    device_specific: true,
+    relative_install_path: "hw",
+
+    srcs: [
+        "Charger.cpp",
+        "ChargerInfo.cpp",
+        "NodeControl.cpp",
+        "TestKit.cpp",
+        "main.cpp",
+    ],
+
+    shared_libs: [
+        "vendor.oplus.hardware.charger-V11-ndk",
+        "libbase",
+        "libbinder_ndk",
+        "libjsoncpp",
+        "liblog",
+    ],
+
+    cpp_std: "c++20",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    stl: "c++_shared",
+}

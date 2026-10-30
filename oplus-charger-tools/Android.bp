@@ -1,0 +1,60 @@
+/*
+ * Copyright (C) 2026 The YAAP Project
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Source replacements for the OPLUS charger helper daemons.
+ */
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+cc_binary {
+    name: "gauged",
+    stem: "gauged",
+    owner: "oneplus",
+    device_specific: true,
+    relative_install_path: "hw",
+
+    srcs: [
+        "gauged.cpp",
+    ],
+
+    shared_libs: [
+        "liblog",
+    ],
+
+    cpp_std: "c++20",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    stl: "c++_shared",
+}
+
+cc_binary {
+    name: "wlschgd",
+    stem: "wlschgd",
+    owner: "oneplus",
+    device_specific: true,
+    relative_install_path: "hw",
+
+    srcs: [
+        "wlschgd.cpp",
+    ],
+
+    shared_libs: [
+        "libcutils",
+        "liblog",
+    ],
+
+    cpp_std: "c++20",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    stl: "c++_shared",
+}
