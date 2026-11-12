@@ -6,6 +6,8 @@
 
 #include "Device.h"
 
+#include "TouchAidl.h"
+
 #include <fcntl.h>
 #include <linux/netlink.h>
 #include <poll.h>
@@ -25,23 +27,12 @@ namespace fingerprint {
 
 namespace {
 constexpr char kDevicePath[] = "/dev/fingerprint_dev";
-// Touch panel switches, in driver preference order. fingerprint_hal is the
-// kernel HBP interface: bit 0 arms the low-power path for screen-off and bit 1
-// makes the normal touch path emit fingerprint down/up events for screen-on.
-// fingerprint_active only arms the low-power path; fp_enable is the legacy
-// oplus_touchscreen_v2 node.
-constexpr char kFpHalPath[] = "/proc/touchpanel/fingerprint_hal";
-constexpr const char* kTpPaths[] = {
-        kFpHalPath,
-        "/proc/touchpanel/fingerprint_active",
-        "/proc/touchpanel/fp_enable",
-};
+// Touch panel switch. Writing the mode here points the panel at the
+// fingerprint driver instead of the framework.
+constexpr char kTpPath[] = "/proc/touchpanel/fp_enable";
 constexpr size_t kTpValueSize = 2;
-// The touch driver may publish the proc node a little after the HAL starts.
-// Open is attempted once per operation window so the first authentication
-// does not wait indefinitely for a driver that never comes up.
-constexpr int kTpOpenAttempts = 20;
-constexpr useconds_t kTpOpenRetryDelayUs = 5 * 1000;
+// Touch service node the fingerprint switch lives on.
+constexpr int32_t kTpNodeFlag = 31;
 // Timeout used only when the wake descriptor cannot be created; with it the
 // reader sleeps until an event or a teardown signal arrives.
 constexpr int kEventPollFallbackTimeoutMs = 100;
@@ -76,12 +67,6 @@ int Device::ioctlSimple(unsigned long request, void* arg) {
 }
 
 int Device::open() {
-    {
-        std::lock_guard<std::mutex> lock(mTpMutex);
-        mTpStateKnown = false;
-        mTpReportEnabled = false;
-        mTpPath = nullptr;
-    }
     mFd = ::open(kDevicePath, O_RDWR);
     if (mFd < 0) {
         LOG(ERROR) << "Device: cannot open " << kDevicePath << ": " << strerror(errno);
@@ -103,9 +88,6 @@ int Device::close() {
             ::close(mTpFd);
             mTpFd = -1;
         }
-        mTpPath = nullptr;
-        mTpReportEnabled = false;
-        mTpStateKnown = false;
     }
     return 0;
 }
@@ -171,182 +153,41 @@ int Device::cleanTouchStatus() {
     return ioctlSimple(driver::kIocCleanTouchStatus, &value);
 }
 
-int Device::openTpNodeLocked() {
-    int error = ENOENT;
-    for (int attempt = 0; attempt < kTpOpenAttempts; ++attempt) {
-        bool retryable = true;
-        for (const char* path : kTpPaths) {
-            const int fd = ::open(path, O_WRONLY | O_CLOEXEC);
-            if (fd >= 0) {
-                mTpFd = fd;
-                mTpPath = path;
-                LOG(INFO) << "Device: fingerprint control node " << path;
-                return 0;
-            }
-            if (errno != ENOENT) {
-                error = errno;
-                retryable = false;
-            }
-        }
-        if (!retryable || attempt + 1 == kTpOpenAttempts) {
-            break;
-        }
-        usleep(kTpOpenRetryDelayUs);
-    }
-    mTpPath = nullptr;
-    return error;
-}
-
-bool Device::isHalTpNode() const {
-    return mTpPath != nullptr && strcmp(mTpPath, kFpHalPath) == 0;
-}
-
-int Device::writeTpModeLocked() {
-    if (mTpFd < 0) {
-        return -1;
-    }
-
-    int mode = mTpEnabled ? 1 : 0;
-    if (mTpReportEnabled) {
-        if (!isHalTpNode()) {
-            LOG(WARNING) << "Device: " << mTpPath
-                         << " cannot report screen-on fingerprint touches";
-            return -1;
-        }
-        mode |= 2;
-    }
-
-    char value[4] = {};
-    const int length = snprintf(value, sizeof(value), "%d", mode);
-    if (length > 0 &&
-        ::write(mTpFd, value, kTpValueSize) == static_cast<ssize_t>(kTpValueSize)) {
-        LOG(INFO) << "Device: touch mode " << mode;
-        return 0;
-    }
-
-    LOG(WARNING) << "Device: cannot set " << mTpPath << ": " << strerror(errno);
-    ::close(mTpFd);
-    mTpFd = -1;
-    mTpPath = nullptr;
-    return -1;
-}
-
 int Device::setTpEnabled(bool enable) {
-    std::lock_guard<std::mutex> lock(mTpMutex);
-    if (mTpStateKnown && mTpEnabled == enable && (enable || !mTpReportEnabled)) {
-        return 0;
-    }
-
-    if (mTpFd < 0) {
-        const int openError = openTpNodeLocked();
-        if (mTpFd < 0) {
-            LOG(WARNING) << "Device: cannot open any fingerprint control node: "
-                         << strerror(openError);
-            mTpStateKnown = false;
-            return -1;
-        }
-    }
-
     // The panel is held while the mode is changed, as the vendor service does,
     // and any touch it latched on the way in is dropped.
     holdWakeLock(true);
     cleanTouchStatus();
 
-    const bool previousEnabled = mTpEnabled;
-    const bool previousReport = mTpReportEnabled;
-    mTpEnabled = enable;
-    if (!enable) {
-        // Disarming the low-power path must not leave screen-on reporting on.
-        mTpReportEnabled = false;
+    // The panel is switched by writing the touch driver's node; when that node
+    // is not reachable from here, the touch service performs the same write.
+    int ret = -1;
+    {
+        std::lock_guard<std::mutex> lock(mTpMutex);
+        if (mTpFd < 0) {
+            mTpFd = ::open(kTpPath, O_WRONLY | O_CLOEXEC);
+        }
+        if (mTpFd >= 0) {
+            char value[4] = {};
+            const int length = snprintf(value, sizeof(value), "%d", enable ? 1 : 0);
+            if (length > 0 &&
+                ::write(mTpFd, value, kTpValueSize) == static_cast<ssize_t>(kTpValueSize)) {
+                ret = 0;
+            } else {
+                LOG(WARNING) << "Device: cannot set " << kTpPath << ": " << strerror(errno);
+                ::close(mTpFd);
+                mTpFd = -1;
+            }
+        } else {
+            LOG(VERBOSE) << "Device: " << kTpPath << " is not reachable (" << strerror(errno)
+                         << "), routing through the touch service";
+            ret = TouchAidl::instance().writeNode(kTpNodeFlag, enable ? 1 : 0);
+        }
     }
-
-    const int ret = writeTpModeLocked();
 
     holdWakeLock(false);
 
-    if (ret == 0) {
-        mTpStateKnown = true;
-    } else {
-        mTpEnabled = previousEnabled;
-        mTpReportEnabled = previousReport;
-        mTpStateKnown = false;
-    }
     LOG(VERBOSE) << "Device: touch panel " << (enable ? "enable" : "disable") << " -> " << ret;
-    return ret;
-}
-
-int Device::setTpReportEnabled(bool enable) {
-    std::lock_guard<std::mutex> lock(mTpMutex);
-    if (mTpStateKnown && mTpReportEnabled == enable) {
-        return 0;
-    }
-
-    const bool previousEnabled = mTpEnabled;
-    if (!mTpEnabled) {
-        if (!enable) {
-            mTpReportEnabled = false;
-            return 0;
-        }
-        // Initial arming may have raced the driver's procfs registration.
-        // Enable both bits now so this operation still gets touches.
-        mTpEnabled = true;
-    }
-
-    if (mTpFd < 0) {
-        const int openError = openTpNodeLocked();
-        if (mTpFd < 0) {
-            LOG(WARNING) << "Device: cannot open any fingerprint control node: "
-                         << strerror(openError);
-            mTpEnabled = previousEnabled;
-            mTpStateKnown = false;
-            return -1;
-        }
-    }
-
-    if (!isHalTpNode() && enable) {
-        // The initial arm may have picked a legacy node before the driver
-        // registered fingerprint_hal. Retry once before giving up.
-        ::close(mTpFd);
-        mTpFd = -1;
-        mTpPath = nullptr;
-        const int openError = openTpNodeLocked();
-        if (mTpFd < 0) {
-            LOG(WARNING) << "Device: cannot open fingerprint_hal: " << strerror(openError);
-            mTpEnabled = previousEnabled;
-            return -1;
-        }
-        if (!isHalTpNode()) {
-            LOG(WARNING) << "Device: screen-on fingerprint reporting is unavailable";
-            mTpEnabled = previousEnabled;
-            return -1;
-        }
-    }
-
-    if (!isHalTpNode()) {
-        // No screen-on report to disable on a legacy node.
-        mTpReportEnabled = false;
-        return 0;
-    }
-
-    holdWakeLock(true);
-    cleanTouchStatus();
-
-    const bool previousReport = mTpReportEnabled;
-    mTpReportEnabled = enable;
-
-    const int ret = writeTpModeLocked();
-
-    holdWakeLock(false);
-
-    if (ret == 0) {
-        mTpStateKnown = true;
-    } else {
-        mTpEnabled = previousEnabled;
-        mTpReportEnabled = previousReport;
-        mTpStateKnown = false;
-    }
-    LOG(VERBOSE) << "Device: screen-on fingerprint report "
-                 << (enable ? "enable" : "disable") << " -> " << ret;
     return ret;
 }
 

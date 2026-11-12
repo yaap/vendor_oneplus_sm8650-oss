@@ -255,12 +255,6 @@ int HalContext::init() {
         return -1;
     }
 
-    // Arm the HBP low-power path now, before the first screen-off. The normal
-    // screen-on report bit is enabled only while an operation is active.
-    if (mDevice->setTpEnabled(true) != 0) {
-        LOG(WARNING) << "HalContext: cannot arm the touch panel low-power path";
-    }
-
     mNotify = std::make_unique<FingerprintNotify>();
     mCore = std::unique_ptr<IFingerprintCore>(createFingerprintCore(this));
     if (mCore == nullptr) {
@@ -294,7 +288,6 @@ int HalContext::deinit() {
     if (mDevice != nullptr) {
         mDevice->setIrqEnabled(false);
         mDevice->setIntr3Enabled(false);
-        mDevice->setTpEnabled(false);
         mDevice->stopEventLoop();
     }
 

@@ -88,10 +88,10 @@ class BiometricsFpSession
             std::shared_ptr<ICancellationSignal>* out);
     void notify(const FingerprintMsg& message);
     void dispatchTouch(bool down);
-    // Enables normal-touch fingerprint reporting for the operation. The HBP
-    // low-power path is armed once when the HAL starts and stays armed, so this
-    // only controls the screen-on report bit.
-    void setTouchReport(bool enable);
+    // Points the touch panel at the driver for the duration of a session. This
+    // has to happen when the operation starts, not when a touch arrives: the
+    // touch is what would trigger it otherwise.
+    void setTouchRouting(bool enable);
     // Binds this session's user database in the TA. One TA is shared by every
     // user's session, so this runs when the session is created; the framework
     // serializes sessions, as the vendor's createSession does.
